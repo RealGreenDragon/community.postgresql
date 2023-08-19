@@ -205,6 +205,108 @@ class PgOwnership(object):
         That's all.
     """
 
+    _OBJ_TYPES = {
+        'aggregate': {
+            'sql_check': {
+                110000: (
+                    "SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON p.proowner = r.oid "
+                    "WHERE p.prokind = 'a' AND p.proname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+                70400: (
+                    "SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON p.proowner = r.oid "
+                    "WHERE p.proisagg AND p.proname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+            },
+            'sql_set': {
+                70400: 'ALTER AGGREGATE %(obj_name)s OWNER TO "%(role)s"',
+            }
+        },
+        'collation': {
+            'sql_check': {
+                90100: (
+                    "SELECT 1 FROM pg_collation AS c JOIN pg_roles AS r ON c.collowner = r.oid "
+                    "WHERE c.collname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+            },
+            'sql_set': {
+                90100: 'ALTER COLLATION %(obj_name)s OWNER TO "%(role)s"',
+            }
+        },
+        'conversion': {
+            'sql_check': {
+                70400: (
+                    "SELECT 1 FROM pg_conversion AS c JOIN pg_roles AS r ON c.conowner = r.oid "
+                    "WHERE c.conname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+            },
+            'sql_set': {
+                70400: 'ALTER CONVERSION %(obj_name)s OWNER TO "%(role)s"',
+            }
+        },
+        'database': {
+            'sql_check': {
+                70300: (
+                    "SELECT 1 FROM pg_database AS d JOIN pg_roles AS r ON d.datdba = r.oid "
+                    "WHERE d.datname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+            },
+            'sql_set': {
+                70300: 'ALTER DATABASE %(obj_name)s OWNER TO "%(role)s"',
+            }
+        },
+        'domain': {
+            'sql_check': {
+                70300: (
+                    "SELECT 1 FROM pg_type AS t JOIN pg_roles AS r ON t.typowner = r.oid "
+                    "WHERE t.typname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+            },
+            'sql_set': {
+                70300: 'ALTER DOMAIN %(obj_name)s OWNER TO "%(role)s"',
+            }
+        },
+        'event_trigger': {
+            'sql_check': {
+                110000: (
+                    "SELECT 1 FROM pg_event_trigger AS e JOIN pg_roles AS r ON e.evtowner = r.oid "
+                    "WHERE e.evtname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+            },
+            'sql_set': {
+                110000: 'ALTER EVENT TRIGGER %(obj_name)s OWNER TO "%(role)s"',
+            }
+        },
+        'foreign_data_wrapper': {
+            'sql_check': {
+                110000: (
+                    "SELECT 1 FROM pg_foreign_data_wrapper AS f JOIN pg_roles AS r ON f.fdwowner = r.oid "
+                    "WHERE f.fdwname = %(obj_name)s AND r.rolname = %(role)s"
+                ),
+            },
+            'sql_set': {
+                110000: 'ALTER FOREIGN DATA WRAPPER %(obj_name)s OWNER TO "%(role)s"',
+            }
+        },
+        'foreign_table': {},
+        'function': {},
+        'language': {},
+        'large_object': {},
+        'matview': {},
+        'procedure': {},
+        'publication': {},
+        'routine': {},
+        'schema': {},
+        'sequence': {},
+        'server': {},
+        'statistics': {},
+        'table': {},
+        'tablespace': {},
+        'text_search_configuration': {},
+        'text_search_dictionary': {},
+        'type': {},
+        'view': {}
+    }
+
     def __init__(self, module, cursor, pg_version, role):
         self.module = module
         self.cursor = cursor
