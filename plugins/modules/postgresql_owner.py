@@ -165,8 +165,11 @@ queries:
   sample: [ 'REASSIGN OWNED BY "bob" TO "alice"' ]
 '''
 
+import re
+
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.community.postgresql.plugins.module_utils.database import (
+    _PG_IDENTIFIER_TO_DOT_LEVEL,
     check_input,
     pg_quote_identifier,
 )
@@ -178,6 +181,7 @@ from ansible_collections.community.postgresql.plugins.module_utils.postgres impo
     pg_cursor_args,
     postgres_common_argument_spec,
     get_server_version,
+    get_server_version_str_from_int
 )
 
 
@@ -205,14 +209,16 @@ class PgOwnership(object):
         That's all.
     """
 
-    _OBJ_NAME_PATTERNS = {
-        'string': None,
-        'function': None,
-        'integer': None,
+    _OBJ_NAME_PATTERNS_MAP = {
+        'string': re.compile(r'\w+'),
+        'function': re.compile(r'(\w+)(\([^)]*\))?'),
+        'integer': re.compile(r'\d+'),
     }
 
-    _OBJ_TYPES = {
+    _OBJ_TYPES_MAP = {
         'aggregate': {
+            'obj_name_pattern': 'function',
+            'obj_name_quote': None,
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON p.proowner = r.oid "
@@ -223,88 +229,105 @@ class PgOwnership(object):
                     "WHERE p.proisagg AND p.proname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70400: 'ALTER AGGREGATE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'collation': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 90100: (
                     "SELECT 1 FROM pg_collation AS c JOIN pg_roles AS r ON c.collowner = r.oid "
                     "WHERE c.collname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 90100: 'ALTER COLLATION %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'conversion': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 70400: (
                     "SELECT 1 FROM pg_conversion AS c JOIN pg_roles AS r ON c.conowner = r.oid "
                     "WHERE c.conname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70400: 'ALTER CONVERSION %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'database': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': None,
             'sql_check': {
                 70300: (
                     "SELECT 1 FROM pg_database AS d JOIN pg_roles AS r ON d.datdba = r.oid "
                     "WHERE d.datname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70300: 'ALTER DATABASE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'domain': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 70300: (
                     "SELECT 1 FROM pg_type AS t JOIN pg_roles AS r ON t.typowner = r.oid "
                     "WHERE t.typname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70300: 'ALTER DOMAIN %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'event_trigger': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_event_trigger AS e JOIN pg_roles AS r ON e.evtowner = r.oid "
                     "WHERE e.evtname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
+            'obj_name_pattern': 'string',
                 110000: 'ALTER EVENT TRIGGER %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'foreign_data_wrapper': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_foreign_data_wrapper AS f JOIN pg_roles AS r ON f.fdwowner = r.oid "
                     "WHERE f.fdwname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 110000: 'ALTER FOREIGN DATA WRAPPER %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'foreign_table': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 90100: (
                     "SELECT 1 FROM pg_class AS c JOIN pg_roles AS r ON c.relowner = r.oid "
                     "WHERE c.relkind = 'f' AND c.relname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 90100: 'ALTER FOREIGN TABLE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'function': {
+            'obj_name_pattern': 'function',
+            'obj_name_quote': None,
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON p.proowner = r.oid "
@@ -315,183 +338,215 @@ class PgOwnership(object):
                     "WHERE NOT p.proisagg AND NOT p.proiswindow AND p.proname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70400: 'ALTER FUNCTION %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'language': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': None,
             'sql_check': {
                 70400: (
                     "SELECT 1 FROM pg_language AS l JOIN pg_roles AS r ON l.lanowner = r.oid "
                     "WHERE l.lanname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70400: 'ALTER LANGUAGE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'large_object': {
+            'obj_name_pattern': 'integer',
+            'obj_name_quote': None,
             'sql_check': {
                 90000: (
                     "SELECT 1 FROM pg_largeobject_metadata AS l JOIN pg_roles AS r ON l.lomowner = r.oid "
                     "WHERE l.oid = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 90000: 'ALTER LARGE OBJECT %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'matview': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 90300: (
                     "SELECT 1 FROM pg_matviews "
                     "WHERE matviewname = %(obj_name)s AND matviewowner = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 90300: 'ALTER MATERIALIZED VIEW %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'procedure': {
+            'obj_name_pattern': 'function',
+            'obj_name_quote': 'table',
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON p.proowner = r.oid "
                     "WHERE p.prokind = 'p' AND p.proname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 110000: 'ALTER PROCEDURE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'publication': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'publication',
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_publication AS p JOIN pg_roles AS r ON p.pubowner = r.oid "
                     "WHERE p.pubname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 110000: 'ALTER PUBLICATION %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'routine': {
+            'obj_name_pattern': 'function',
+            'obj_name_quote': 'table',
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_proc AS p JOIN pg_roles AS r ON p.proowner = r.oid "
                     "WHERE p.proname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 110000: 'ALTER ROUTINE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'schema': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'schema',
             'sql_check': {
                 70400: (
                     "SELECT 1 FROM information_schema.schemata "
                     "WHERE schema_name = %(obj_name)s AND schema_owner = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70400: 'ALTER SCHEMA %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'sequence': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'sequence',
             'sql_check': {
                 70400: (
                     "SELECT 1 FROM pg_class AS c JOIN pg_roles AS r ON c.relowner = r.oid "
                     "WHERE c.relkind = 'S' AND c.relname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70400: 'ALTER SEQUENCE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'server': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 80400: (
                     "SELECT 1 FROM pg_foreign_server AS f JOIN pg_roles AS r ON f.srvowner = r.oid "
                     "WHERE f.srvname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 80400: 'ALTER SERVER %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'statistics': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 110000: (
                     "SELECT 1 FROM pg_statistic_ext AS s JOIN pg_roles AS r ON s.stxowner = r.oid "
                     "WHERE s.stxname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 110000: 'ALTER STATISTICS %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'table': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 70400: (
                     "SELECT 1 FROM pg_tables "
                     "WHERE tablename = %(obj_name)s AND tableowner = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 70400: 'ALTER TABLE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'tablespace': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': None,
             'sql_check': {
                 80000: (
                     "SELECT 1 FROM pg_tablespace AS t JOIN pg_roles AS r ON t.spcowner = r.oid "
                     "WHERE t.spcname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 80000: 'ALTER TABLESPACE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'text_search_configuration': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 80300: (
                     "SELECT 1 FROM pg_ts_config AS t JOIN pg_roles AS r ON t.cfgowner = r.oid "
                     "WHERE t.cfgname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 80300: 'ALTER TEXT SEARCH CONFIGURATION %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'text_search_dictionary': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 80300: (
                     "SELECT 1 FROM pg_ts_dict AS t JOIN pg_roles AS r ON t.dictowner = r.oid "
                     "WHERE t.dictname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 80300: 'ALTER TEXT SEARCH DICTIONARY %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'type': {
             'sql_check': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
                 80000: (
                     "SELECT 1 FROM pg_type AS t JOIN pg_roles AS r ON t.typowner = r.oid "
                     "WHERE t.typname = %(obj_name)s AND r.rolname = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 80000: 'ALTER TYPE %(obj_name)s OWNER TO "%(role)s"',
             }
         },
         'view': {
+            'obj_name_pattern': 'string',
+            'obj_name_quote': 'table',
             'sql_check': {
                 80300: (
                     "SELECT 1 FROM pg_views "
                     "WHERE viewname = %(obj_name)s AND viewowner = %(role)s"
                 ),
             },
-            'sql_set': {
+            'sql_alter': {
                 80300: 'ALTER VIEW %(obj_name)s OWNER TO "%(role)s"',
             }
         }
@@ -508,6 +563,33 @@ class PgOwnership(object):
         self.obj_name = ''
         self.obj_type = ''
 
+        # for each obj_type in _OBJ_TYPES map
+        for obj_type in self._OBJ_TYPES_MAP:
+            # check all mandatory keys are present
+            if not all([k in obj_type for k in ('obj_name_pattern','obj_name_quote','sql_check','sql_alter')]):
+                self.module.fail_json(
+                    msg="Internal module error - _OBJ_TYPES_MAP - %s obj_type - Missing mandatory keys" % obj_type
+                )
+            # check obj_name_pattern is correct
+            if obj_type['obj_name_pattern'] not in self._OBJ_NAME_PATTERNS_MAP:
+                self.module.fail_json(
+                    msg="Internal module error - _OBJ_TYPES_MAP - %s obj_type - Invalid obj_name_pattern" % obj_type
+                )
+            # check obj_name_quote is correct
+            if obj_type['obj_name_quote'] not in _PG_IDENTIFIER_TO_DOT_LEVEL:
+                self.module.fail_json(
+                    msg="Internal module error - _OBJ_TYPES_MAP - %s obj_type - Invalid obj_name_quote" % obj_type
+                )
+            # check sql_check and sql_alter min versions are equal
+            if min(list(obj_type['sql_check'].keys())) != min(list(obj_type['sql_alter'].keys())):
+                self.module.fail_json(
+                    msg="Internal module error - _OBJ_TYPES_MAP - %s obj_type - sql_check and sql_alter min versions are different" % obj_type
+                )
+
+    @classmethod
+    def get_valid_obj_types(cls):
+        return sorted(list(cls._OBJ_TYPES_MAP.keys()))
+
     def check_role_exists(self, role, fail_on_role=True):
         """Check the role exists or not.
 
@@ -521,9 +603,7 @@ class PgOwnership(object):
                 self.module.fail_json(msg="Role '%s' does not exist" % role)
             else:
                 self.module.warn("Role '%s' does not exist, pass" % role)
-
             return False
-
         else:
             return True
 

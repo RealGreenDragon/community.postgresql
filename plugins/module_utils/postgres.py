@@ -19,6 +19,7 @@ from os import environ
 from ansible.module_utils.basic import missing_required_lib
 from ansible.module_utils._text import to_native
 from ansible.module_utils.six import iteritems
+from ansible.module_utils.common.validation import check_type_int
 from ansible_collections.community.postgresql.plugins.module_utils.version import LooseVersion
 
 psycopg = None  # This line is needed for unit tests
@@ -508,6 +509,23 @@ def get_server_version(conn):
     else:
         return conn.server_version
 
+def get_server_version_str_from_int(server_version_int):
+    """Get server version in string format from numeric format.
+    Returns None if version number is invalid.
+
+    Args:
+        server_version_int (int) -- server version.
+
+    Returns server version (str).
+    """
+    try:
+        v = check_type_int(server_version_int)
+        if v < 10000:
+            return None
+        v1, v2, v3 = v[:-4], v[-4:-2], v[-2:]
+        return '%s.%s.%s' % (v1, v2, v3)
+    except ValueError:
+        return None
 
 def set_autocommit(conn, autocommit):
     """Set autocommit.
